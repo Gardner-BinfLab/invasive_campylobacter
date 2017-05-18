@@ -139,7 +139,7 @@ model_rf_fs
 png("Featureimportance.png", width=450, height = 350)
 plot(x=1:93, y=model_rf_fs$importance[,4][order(model_rf_fs$importance[,4], decreasing=T)], xlab="Predictor ranking", ylab="Mean decrease in Gini index", pch=16)
 dev.off()
-print(row.names(model_rf_fs$importance[model_rf_fs$importance[,4]>quantile(importance, 0.9),]))
+print(row.names(model_rf_fs$importance[model_rf_fs$importance[,4]>quantile(model_rf_fs$importance[,4], 0.9),]))
 ```
 
 Performance is actually no different whether we use the full dataset or the trimmed dataset. The top genesets vary a bit, and prior filtering based on univariate tests gives us a higher likelihood of seeing parallel changes, rather than identifying lineage effects. Because of this, will report top genes from filtered set. 
@@ -178,7 +178,7 @@ bestfeatures <- row.names(model_rf_fs$importance[model_rf_fs$importance[,4]>quan
 
 
 ```{r, looking at best genes}
-annotations <- read.delim("~/bigfiles/eproNOG.annotations.tsv", header=F)
+annotations <- read.delim("eproNOG.annotations.tsv", header=F)
 genes <- vector()
 for (i in 1:length(bestfeatures)) {
 	genes <- c(genes, row.names(data2)[grep(bestfeatures[i], row.names(data2))])
@@ -246,25 +246,6 @@ dev.off()
 png("Random_genes.png", width=1000, height=1000)
 grid.arrange(plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8, plot8, ncol=3)
 dev.off()
-```
-
-```{r, does PCA do a good job of separating invasive and gastrointestinal strains using our top indicators?}
-pcadata <- na.roughfix(traindata[,bestfeatures])
-ir.pca <- prcomp(pcadata,center = TRUE, scale=TRUE) 
-
-library(rgl)
-plot3d(ir.pca$x[,1:3], col=as.numeric(factor(traindata$class)))
-
-```
-
-PCA doesn't do a much better job that MreB and Pgp1 in separating invasive and gastrointestnal strains
-
-```{r, evaluating significance of DBS values}
-dbs_indiv <- c(data2)
-dbs_indiv2 <- unlist(dbs_indiv)
-dbs_indiv2 <- dbs_indiv2[!is.na(dbs_indiv2)]
-
-sum(abs(dbs_indiv2)>2.5)/length(dbs_indiv2)
 ```
 
 
