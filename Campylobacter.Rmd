@@ -8,6 +8,8 @@ output: pdf_document
 # Workflow for identifying genes under different sequence constraints in invasive Campylobacter compared to gastrointestinal close relatives. 
 
 ```{r, read in data and check it over}
+setwd("~/Documents/invasive_campylobacter/")
+
 # check consistent model calls across orthogroups
 check <- read.delim("modelcheck", header=F, stringsAsFactors=F)
 check <- check[,-1]
@@ -25,7 +27,40 @@ data <- data[,counts==1]  # only include orthologous groups in which all protein
 
 ```
 
-Having read the data in and checked for consistent top model calls, we can identify 1874 orthologous groups with a single model hit, 249 with no model hit, and 40 with more than one model hit. Moving forward, we will only work with the 1874 clear cases. We're restricting the analysis to genes that have at least 10 gastrointestinal strains with representatives adn at least 5 invasive strains with representatives. 
+Having read the data in and checked for consistent top model calls, we can identify 1874 orthologous groups with a single model hit, 249 with no model hit, and 40 with more than one model hit. Moving forward, we will only work with the 1874 clear cases. We're restricting the analysis to genes that have at least 10 gastrointestinal strains with representatives and at least 5 invasive strains with representatives. 
+
+```{r}
+# gene presence/absence
+
+row.names(data) <- strains
+table(colSums(is.na(data)))
+
+gpa <- data[,colSums(is.na(data))!=0]
+
+gpa_count <- data.frame(gene=character(), gastrointestinal=numeric(), invasive=numeric(), stringsAsFactors = F)
+for(i in 1:ncol(gpa)) {
+  gpa_count[i,] <- list(as.character(colnames(gpa)[i]), as.numeric(20-sum(is.na(gpa[-grep("Caje", row.names(gpa)),i]))), as.numeric(10-sum(is.na(gpa[grep("Caje", row.names(gpa)),i]))))
+}
+
+gpa_count$gene <- sub(".*-", "", gpa_count$gene)
+gpa_count$gene <- sub("_epro.*", "", gpa_count$gene)
+gpa_count$gene <- sub("_NA", "", gpa_count$gene)
+
+# for(i in 1:nrow(gpa_count)) {
+#   gpa_count$test[i] <- binom.test(gpa_count$invasive[i], 10, gpa_count$gastrointestinal[i]/20)$p.value
+# }
+for(i in 1:nrow(gpa_count)) {
+  gpa_count$test[i] <- chisq.test(matrix(c(sum(gpa_count$invasive), sum(gpa_count$gastrointestinal), gpa_count$invasive[i], gpa_count$gastrointestinal[i]), nrow=2))$p.value
+}
+
+names(gpa_count) <- c("Gene", "Gastrointestinal", "Invasive", "Chi squared statistic")
+
+write.csv(gpa_count, "~/Documents/invasive_campylobacter/gene_counts.csv", row.names=F)
+
+# gpa_count$test <- binom.test(gpa_count$invasive, 10, gpa_count$gastrointestinal/20)
+
+```
+
 
 ```{r, calculate summary statistics for each query OG}
 dbsvals <- vector()
@@ -52,7 +87,7 @@ for (i in 1:ncol(data)) {
     }
 }
 
-sum(is.na(dbsvals)) # 1432 gene families total
+sum(is.na(dbsvals)) # 1432 gene families total had insufficient members
 
 row.names(data2) <- colnames(data)
 colnames(data2) <- row.names(data)
@@ -101,13 +136,13 @@ colnames(traintrim) <- sub(".*-", "", colnames(traintrim))
 colnames(traintrim) <- sub("_eproNOG.*", "", colnames(traintrim))
 
 save(traindata, traintrim, file="traindata.Rdata")
-load("traindata.Rdata")
+load("~/Documents/invasive_campylobacter/traindata.Rdata")
 ```
 
 ```{r, random forest approach}
 set.seed(1)
 library(randomForest)
-model_rf <- randomForest(class ~ ., data=traindata, ntree=1000, mtry=100, na.action=na.roughfix, importance=T, proximity=T)
+model_rf <- randomForest(class ~ ., data=traindata, ntree=1000, mtry=100, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T)
 model_rf
 
 bigrfimp <- row.names(model_rf$importance)[model_rf$importance[,4]>quantile(model_rf$importance[,4], 0.9)]
@@ -124,8 +159,10 @@ for (i in 1:100) {
 	
 }
 
+pdf("~/Documents/invasive_campylobacter/rferror_fulldataset.pdf", width=6, height=5)
 hist(permute, main="", xlab="Median OOB error rate")
 abline(v=median(model_rf$err.rate[,1]), col="red")
+dev.off()
 ```
 
 Looks like a subset of the invasive strains can be separated out from the gastrointestinals. The next questions are: is this impressive, and what distinguishes these invasives from the other Campylobacter strains? Based on permutation of the classes, it looks as though it can be very hard to distinguish random classifications, with some of these models giving a median OOB error rate of 67%. The error rate of our model is 23%, while the lowest error for the permuted classes is 20%. Given that there are genetic relationships between these groups that are likely to be captured in the randomised data, this is quite impressive. This performance isn't very good for practical purposes though, with error rates for our class of interest being 60%. This could be partly because the data are so sparse. What happens if we do some feature selection first?
@@ -156,12 +193,16 @@ hist(permute, main="", xlab="Out-of-bag error rate")
 abline(v=model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1], col="red")
 dev.off()
 
-png("rferror_dens.png", width=450, height=350)
-plot(density(permute), main="", xlab="OOB error rate")
+pdf("rferror.pdf", width=6, height=5)
+hist(permute, main="", xlab="Out-of-bag error rate")
 abline(v=model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1], col="red")
 dev.off()
 
 png("Featureimportance.png", width=400, height = 350)
+plot(x=1:93, y=model_rf_fs$importance[,4][order(model_rf_fs$importance[,4], decreasing=T)], xlab="Gene ranking", ylab="Gene importance (mean decrease in Gini index)", pch=16); abline(h=quantile(importance, 0.95), lty=2, lwd=2, col="grey"); abline(h=quantile(importance, 0.9), lty=3, lwd=2, col="grey")
+dev.off()
+
+pdf("Featureimportance.pdf", width=6, height = 5)
 plot(x=1:93, y=model_rf_fs$importance[,4][order(model_rf_fs$importance[,4], decreasing=T)], xlab="Gene ranking", ylab="Gene importance (mean decrease in Gini index)", pch=16); abline(h=quantile(importance, 0.95), lty=2, lwd=2, col="grey"); abline(h=quantile(importance, 0.9), lty=3, lwd=2, col="grey")
 dev.off()
 
@@ -216,6 +257,11 @@ ggplot(data4[data4$Var2 %in% bestfeatures,], aes(x=Var1, y=Var2, fill=value)) + 
 ```{r, visualising results}
 data <- data.frame(data)
 data <- cbind.data.frame(data, class=traindata$class)
+data$sample <- colnames(data2)
+data$CC <- c("ST50", "ST50", "ST50", "ST50", "ST51", "ST51", "ST51", "ST51", "ST53", "ST53", "ST61", "ST61", "CC21/48", "CC21/48", "CC677", "CC677", "CC677", "CC677", "ST1517", "ST1517", "CC21/48", "ST1517", "ST51", "ST51", "CC677", "ST50", "ST61", "CC677", "ST53", "ST50")
+data$morphology <- c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,2,3,1,2,1)
+library(plyr)
+data$morphology2 <- revalue(factor(data$morphology), c("1"="Helical", "2"="Elongated helical", "3"="Rod"))
 
 ggplot(traindata, aes(x=OXC6292_01248, y=OXC6292_01140, col=class)) + geom_point() + scale_colour_manual(values=c("skyblue", "coral3"), name="Strain")
 
@@ -225,15 +271,25 @@ corrplot(cor(traindata[,bestfeatures], use="pairwise.complete.obs", method="spea
 dev.off()
 
 png("cell_shape.png", width=350, height=350)
-ggplot(data,  aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', col='class')) + geom_jitter(width=0.2, height=0.2, size=3) + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15) + scale_colour_manual(values=c("skyblue", "coral3"), name="") + theme(legend.position = "top")
+ggplot(data,  aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', col='class')) + geom_jitter(width=0.2, height=0.2, size=3) + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15) + scale_colour_manual(values=c("coral3", "skyblue"), name="") + theme(legend.position = "top")
 dev.off()
 pdf("cell_shape.pdf", width=4, height=4)
-ggplot(data, aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', col='class')) + geom_jitter(width=0.2, height=0.2, size=3) + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15) + scale_colour_manual(values=c("skyblue", "coral3"), name="") + theme(legend.position = "top")
+ggplot(data, aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', label='sample', col='class')) + geom_point() + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15) + theme(legend.position = "top") + geom_label(position=position_dodge(width=0.5)) + scale_colour_manual(values=c("coral3", "skyblue"), name="")
 dev.off()
 
 png("toppred.png", width=350, height=350)
 ggplot(traindata, aes(x=OXC6292_01140, y=OXC6292_01615, col=class)) + geom_jitter(width=0.2, height=0.2) + ylab("FUSC family protein") + xlab("Gne") + theme_bw(20) + scale_colour_manual(values=c("skyblue", "coral3"), name="") + theme(legend.position = "top")
 dev.off()
+
+ggplot(data, aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', col='CC', shape='class', size='morphology2', label='sample')) + geom_jitter(width=0.3, height=0.3) + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15)# + geom_text()
+ggsave("~/Documents/invasive_campylobacter/Sample_attributes_keygenes.png", width=8, height=6)
+ggsave("~/Documents/invasive_campylobacter/Sample_attributes_keygenes.pdf", width=8, height=6, useDingbats=F)
+
+# Alternative way of viewing the data
+alt <- cbind.data.frame(Morphology=data$morphology2, CC=data$CC, Sample=data$sample, MreB=data3$OXC6292.OXC6292_00702, Pgp1=data3$OXC6292.OXC6292_00266, Pgp2=data3$OXC6292.OXC6292_01417)
+alt2=melt(alt, id.vars = c("Morphology", "CC", "Sample"))
+
+ggplot(alt2, aes(x=CC, y=value, size=Morphology, col=CC)) + facet_grid(Morphology~variable) + geom_point()
 ```
 
 ```{r}
@@ -292,4 +348,17 @@ corrplot(predict(model_rf_fs, na.roughfix(traintrim), proximity=T)$proximity, tl
 dev.off()
 
 ```
+
+```{r, gene presence absence}
+orths <- read.delim("~/Documents/invasive_campylobacter/patrickclustersparsed", stringsAsFactors = F, header=F)
+presabs <- data.frame()
+for(i in 1:nrow(orths)) {
+  presabs <- rbind(presabs, cbind.data.frame(gastro=sum(is.na(orths[i,1:20])), inv=sum(is.na(orths[i,21:30]))))
+}
+
+nrow(presabs[presabs$gastro>15&presabs$inv<3,])
+nrow(presabs[presabs$gastro<5&presabs$inv>8,])
+```
+
+
 
