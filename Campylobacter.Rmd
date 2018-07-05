@@ -46,9 +46,6 @@ gpa_count$gene <- sub(".*-", "", gpa_count$gene)
 gpa_count$gene <- sub("_epro.*", "", gpa_count$gene)
 gpa_count$gene <- sub("_NA", "", gpa_count$gene)
 
-# for(i in 1:nrow(gpa_count)) {
-#   gpa_count$test[i] <- binom.test(gpa_count$invasive[i], 10, gpa_count$gastrointestinal[i]/20)$p.value
-# }
 for(i in 1:nrow(gpa_count)) {
   gpa_count$test[i] <- chisq.test(matrix(c(sum(gpa_count$invasive), sum(gpa_count$gastrointestinal), gpa_count$invasive[i], gpa_count$gastrointestinal[i]), nrow=2))$p.value
 }
@@ -56,8 +53,6 @@ for(i in 1:nrow(gpa_count)) {
 names(gpa_count) <- c("Gene", "Gastrointestinal", "Invasive", "Chi squared statistic")
 
 write.csv(gpa_count, "~/Documents/invasive_campylobacter/gene_counts.csv", row.names=F)
-
-# gpa_count$test <- binom.test(gpa_count$invasive, 10, gpa_count$gastrointestinal/20)
 
 ```
 
