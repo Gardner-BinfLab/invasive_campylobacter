@@ -7,95 +7,77 @@ output: pdf_document
 
 # Workflow for identifying genes under different sequence constraints in invasive Campylobacter compared to gastrointestinal close relatives. 
 
-```{r, read in data and check it over}
-setwd("~/Documents/invasive_campylobacter/")
+```{r}
+# read in data and check it over
 
-# check consistent model calls across orthogroups
-check <- read.delim("modelcheck", header=F, stringsAsFactors=F)
-check <- check[,-1]
-counts <- vector()
-for(i in 1:nrow(check)) {
-  counts <- c(counts, length(unique(t(check[i,grep("eproNOG", check[i,])]))))
+library(caret)
+library(randomForest)
+set.seed(1)
+
+traindata <- read.delim("bitscores.tsv", row.names=1)
+traindata <- t(traindata)
+
+phenotype <- read.delim("phenotype.tsv", header=F)
+phenotype[,1] <- make.names(phenotype[,1])
+
+traindata <- cbind.data.frame(traindata, phenotype=phenotype[match(row.names(traindata), phenotype[,1]),2])
+
+# Roary seems to have split some paralogs in a way that doesn't make much sense - remove paralogous groups
+orthologs <- read.csv("gene_presence_absence.csv", stringsAsFactors = F)
+nonunique <- orthologs$Non.unique.Gene.name[orthologs$Non.unique.Gene.name!=""]
+nonunique2 <- orthologs$Gene[orthologs$Non.unique.Gene.name!=""]
+traindata <- traindata[,is.na(match(colnames(traindata), nonunique))]
+traindata <- traindata[,is.na(match(colnames(traindata), nonunique2))]
+traindata <- traindata[,!is.na(match(colnames(traindata), c(orthologs$Gene[orthologs$Avg.sequences.per.isolate<1.1], "phenotype")))]
+
+traindata[is.na(traindata)] <- 0
+traindata <- traindata[,-nearZeroVar(traindata)]
+names(traindata) <- make.names(names(traindata))
+
+# also check trimming of inconsistent start sites cause by PROKKA/Prodigal
+trimming <- read.table("inconsistent_starts.txt", header=F)
+hist(trimming$V2)
+# 368 genes have had >50 amino acids trimmed from beginning due to inconsistent starts
+trimgenes <- trimming$V1[trimming$V2>20]
+trimgenes <- sub(".afa", "", trimgenes)
+ogsize <- vector()
+for(i in trimgenes) {
+  if(!is.na(match(i, colnames(traindata)))) {
+      ogsize <- c(ogsize, sum(traindata[,i]>0))
+  }
 }
-table(counts)
-
-data <- read.delim("bitscores", header=F)
-row.names(data) <- data[,1]
-data <- data[,-1]
-data <- t(data)
-data <- data[,counts==1]  # only include orthologous groups in which all proteins are a match to the same eggNOG model
+# some of the genes had already been filtered out (possibly due to being too short to have a significant model match), down to 240, 128 of which have a representative in the full 30 strains. Removing these genes because the length trimmed off is too great to ignore
+traindata <- traindata[,is.na(match(colnames(traindata), trimgenes))]
 
 ```
 
-Having read the data in and checked for consistent top model calls, we can identify 1874 orthologous groups with a single model hit, 249 with no model hit, and 40 with more than one model hit. Moving forward, we will only work with the 1874 clear cases. We're restricting the analysis to genes that have at least 10 gastrointestinal strains with representatives and at least 5 invasive strains with representatives. 
+Having read the data in and checked for consistent top model calls, we can identify 1874 orthologous groups with a single model hit, 249 with no model hit, and 40 with more than one model hit. Moving forward, we will only work with the 1874 clear cases. We're restricting the analysis to genes that have at least 10 gastrointestinal strains with representatives adn at least 5 invasive strains with representatives. 
 
 ```{r}
-# gene presence/absence
+# calculate summary statistics for each query OG
 
-row.names(data) <- strains
-table(colSums(is.na(data)))
-
-gpa <- data[,colSums(is.na(data))!=0]
-
-gpa_count <- data.frame(gene=character(), gastrointestinal=numeric(), invasive=numeric(), stringsAsFactors = F)
-for(i in 1:ncol(gpa)) {
-  gpa_count[i,] <- list(as.character(colnames(gpa)[i]), as.numeric(20-sum(is.na(gpa[-grep("Caje", row.names(gpa)),i]))), as.numeric(10-sum(is.na(gpa[grep("Caje", row.names(gpa)),i]))))
-}
-
-gpa_count$gene <- sub(".*-", "", gpa_count$gene)
-gpa_count$gene <- sub("_epro.*", "", gpa_count$gene)
-gpa_count$gene <- sub("_NA", "", gpa_count$gene)
-
-for(i in 1:nrow(gpa_count)) {
-  gpa_count$test[i] <- chisq.test(matrix(c(sum(gpa_count$invasive), sum(gpa_count$gastrointestinal), gpa_count$invasive[i], gpa_count$gastrointestinal[i]), nrow=2))$p.value
-}
-
-names(gpa_count) <- c("Gene", "Gastrointestinal", "Invasive", "Chi squared statistic")
-
-write.csv(gpa_count, "~/Documents/invasive_campylobacter/gene_counts.csv", row.names=F)
-
-```
-
-
-```{r, calculate summary statistics for each query OG}
 dbsvals <- vector()
 ksvals <- vector()
 data2 <- data.frame()
-newnames <- vector()
-ranges <- vector()
-highvals <- vector()
 
-for (i in 1:ncol(data)) {
-    data2 <- rbind(data2, median(data[,i], na.rm=T)-data[,i])
-    if (sum(!is.na(data[1:20,i]))>5 & sum(!is.na(data[21:30,i]))>5) {
-        dbsvals[i] <- median(data[1:20,i], na.rm=T) - median(data[21:30,i], na.rm=T)
-        ksvals[i] <- as.numeric(ks.test(data[1:20,i],data[21:30,i], na.rm=T)$statistic)
-		ranges[i] <- max(data[,i], na.rm=T) - min(data[,i], na.rm=T)
-		if (sum(data[,i][21:30]>quantile(data[,i][1:20], 0.975, na.rm=T),na.rm=T)>2) {
-			highvals <- c(highvals, i)
-		}
-    }
-    else {
-        dbsvals[i] <- NA
-        ksvals[i] <- NA
-		ranges[i] <- NA
-    }
+for (i in 1:(ncol(traindata)-1)) {
+  data2 <- rbind(data2, median(traindata[,i], na.rm=T)-traindata[,i])
+  dbsvals[i] <- median(traindata[traindata$phenotype=="Gastrointestinal",i], na.rm=T) - median(traindata[traindata$phenotype=="Invasive",i], na.rm=T)
+  ksvals[i] <- as.numeric(ks.test(traindata[traindata$phenotype=="Gastrointestinal",i],traindata[traindata$phenotype=="Invasive",i], na.rm=T)$statistic)
 }
 
-sum(is.na(dbsvals)) # 1432 gene families total had insufficient members
+sum(is.na(dbsvals))
 
-row.names(data2) <- colnames(data)
-colnames(data2) <- row.names(data)
-strains <- c("OXC6292", "OXC6489", "OXC6598", "OXC6932", "OXC6357", "OXC6609", "OXC7157", "OXC7004", "OXC6927", "OXC4632", "OXC6453", "OXC7452", "H22082", "H704", "OXC7095", "OXC7358", "OXC6332", "OXC7345", "OXC7664", "OXC6729", "Caje_H1604", "Caje_H1605", "Caje_H1606", "Caje_H1607", "Caje_H1608", "Caje_H1662", "Caje_H1664", "Caje_H1666", "Caje_H1668", "Caje_H1670")
+row.names(data2) <- colnames(traindata)[-ncol(traindata)]
+colnames(data2) <- row.names(traindata)
 
-colnames(data2) <- strains
-
-save(data, data2, dbsvals, ksvals, file="data.Rdata")
-load("data.Rdata")
+save(traindata, data2, dbsvals, ksvals, file="data.Rdata")
 ```
 
-```{r, summary stats for top genes}
-stats <- cbind.data.frame(gene=colnames(data)[!is.na(dbsvals)&!is.na(ksvals)&abs(dbsvals)>(quantile(abs(dbsvals), 0.8, na.rm=T))&ksvals>quantile(ksvals, 0.8, na.rm=T)], dbs=dbsvals[!is.na(dbsvals)&!is.na(ksvals)&abs(dbsvals)>(quantile(abs(dbsvals), 0.8, na.rm=T))&ksvals>quantile(ksvals, 0.8, na.rm=T)], ks=ksvals[!is.na(dbsvals)&!is.na(ksvals)&abs(dbsvals)>(quantile(abs(dbsvals), 0.8, na.rm=T))&ksvals>quantile(ksvals, 0.8, na.rm=T)])
+```{r}
+# summary stats for top genes
+
+stats <- cbind.data.frame(gene=colnames(traindata)[!is.na(dbsvals)&!is.na(ksvals)&abs(dbsvals)>(quantile(abs(dbsvals), 0.8, na.rm=T))&ksvals>quantile(ksvals, 0.8, na.rm=T)], dbs=dbsvals[!is.na(dbsvals)&!is.na(ksvals)&abs(dbsvals)>(quantile(abs(dbsvals), 0.8, na.rm=T))&ksvals>quantile(ksvals, 0.8, na.rm=T)], ks=ksvals[!is.na(dbsvals)&!is.na(ksvals)&abs(dbsvals)>(quantile(abs(dbsvals), 0.8, na.rm=T))&ksvals>quantile(ksvals, 0.8, na.rm=T)])
 
 dbsp <- vector()
 ksp <- vector()
@@ -105,189 +87,233 @@ for(i in 1:nrow(stats)) {
   ksp <- c(ksp, sum(!is.na(ksvals)&ksvals>stats$ks[i])/sum(!is.na(ksvals)))
 }
 
-stats2 <- cbind.data.frame(stats[,1:2], dbsp, stats[,3], ksp)
-write.table(stats2, file="summarystats_topgenes.tsv", sep="\t", quote=F, row.names=F, col.names=F)
+Description <- orthologs$Annotation[match(stats[,1], orthologs$Gene)]
+
+stats2 <- cbind.data.frame(stats[,1], Description, stats[,2], dbsp, ks=stats[,3], ksp)
+names(stats2) <- c("Gene", "Description", "DBS", "DBS_P", "KS", "KS_P")
+stats2$DBS_P <- round(stats2$DBS_P, digits=3)
+stats2$KS_P <- round(stats2$KS_P, digits=3)
+
+write.table(stats2[order(stats2$KS_P),], file="summarystats_topgenes.tsv", sep="\t", quote=F, row.names=F, col.names=T)
+
 ```
 
-We can see that there is no clear signature, even in the best discriminatory genes, between functional potential of invasive proteins and gastrointestinal proteins. Using basic statistical tests doesn't work, so we will turn to machine learning methods to see if they can pick up a better signal. 
 
-```{r, building a training dataset}
+```{r}
+# building a training dataset
+
 library(rpart)
 library(caret)
-# library(rattle)
 library(randomForest)
 
-traindata <- t(data2[!is.na(dbsvals),])
-traindata <- traindata[,-nearZeroVar(traindata)]
-traindata <- cbind.data.frame(traindata, as.factor(c(rep("Gastrointestinal", 20), rep("Invasive", 10))))
-colnames(traindata)[ncol(traindata)] = "class"
-colnames(traindata) <- sub(".*-", "", colnames(traindata))
-colnames(traindata) <- sub("_eproNOG.*", "", colnames(traindata))
-
-traintrim <- t(data2[!is.na(dbsvals)&!is.na(ksvals)&ksvals>quantile(ksvals, 0.8, na.rm=T)&abs(dbsvals)>quantile(abs(dbsvals), 0.8, na.rm=T),])
-traintrim <- cbind.data.frame(traintrim, as.factor(c(rep("Gastrointestinal", 20), rep("Invasive", 10))))
-colnames(traintrim)[ncol(traintrim)] = "class"
-colnames(traintrim) <- sub(".*-", "", colnames(traintrim))
-colnames(traintrim) <- sub("_eproNOG.*", "", colnames(traintrim))
+traintrim <- traindata[,!is.na(dbsvals)&!is.na(ksvals)&ksvals>quantile(ksvals, 0.8, na.rm=T)&abs(dbsvals)>quantile(abs(dbsvals), 0.8, na.rm=T)]
+traintrim <- cbind.data.frame(traintrim, phenotype=traindata$phenotype)
 
 save(traindata, traintrim, file="traindata.Rdata")
-load("~/Documents/invasive_campylobacter/traindata.Rdata")
 ```
 
-```{r, random forest approach}
+
+```{r}
+# random forest approach
+
 set.seed(1)
 library(randomForest)
-model_rf <- randomForest(class ~ ., data=traindata, ntree=1000, mtry=100, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T)
-model_rf
 
-bigrfimp <- row.names(model_rf$importance)[model_rf$importance[,4]>quantile(model_rf$importance[,4], 0.9)]
-```
-
-```{r, control for RF_fs}
-permute <- vector()
-
-for (i in 1:100) {
-	set.seed(i)
-	controlclass <- sample(traindata$class)
-	model_test <- randomForest(controlclass ~ ., data=traindata, ntree=1000, mtry=100, na.action=na.roughfix)
-	permute <- c(permute, median(model_test$err.rate[,1]))
-	
+# parameters for all genes
+big_rf_acc <- vector()
+for(i in c(5, 10, 50, 100, 200, 500)) {
+  big_rf <- randomForest(phenotype ~ ., data=traindata, ntree=10000, mtry=i, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T, sampsize=c(7,7))
+  big_rf_acc <- c(big_rf_acc, (big_rf$confusion[1,2]+big_rf$confusion[2,1])/30)
+  big_rf <- randomForest(phenotype ~ ., data=traindata, ntree=10000, mtry=i, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T, sampsize=c(7,7))
+  big_rf_acc <- c(big_rf_acc, (big_rf$confusion[1,2]+big_rf$confusion[2,1])/30)
+  big_rf <- randomForest(phenotype ~ ., data=traindata, ntree=10000, mtry=i, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T, sampsize=c(7,7))
+  big_rf_acc <- c(big_rf_acc, (big_rf$confusion[1,2]+big_rf$confusion[2,1])/30)
 }
 
-pdf("~/Documents/invasive_campylobacter/rferror_fulldataset.pdf", width=6, height=5)
-hist(permute, main="", xlab="Median OOB error rate")
-abline(v=median(model_rf$err.rate[,1]), col="red")
+png("wholemodel_mtry.png", width=600, height=500)
+plot(x=c(5, 5, 5, 10, 10, 10, 50, 50, 50, 100, 100, 100, 200, 200, 200, 500, 500, 500), y=big_rf_acc)
+dev.off()
+
+model_rf_acc <- vector()
+for(i in c(5, 10, 20, 30, 50, 100, 200)) {
+  model_rf <- randomForest(phenotype ~ ., data=traintrim, ntree=10000, mtry=i, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T, sampsize=c(7,7))
+  prec <- model_rf$confusion[2,2]/sum(model_rf$confusion[,2])
+  rec <- model_rf$confusion[2,2]/sum(model_rf$confusion[2,])
+  f1 <- 2*prec*rec/(prec+rec)
+  model_rf_acc <- c(model_rf_acc, f1)
+  model_rf <- randomForest(phenotype ~ ., data=traintrim, ntree=10000, mtry=i, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T, sampsize=c(7,7))
+  prec <- model_rf$confusion[2,2]/sum(model_rf$confusion[,2])
+  rec <- model_rf$confusion[2,2]/sum(model_rf$confusion[2,])
+  f1 <- 2*prec*rec/(prec+rec)
+  model_rf_acc <- c(model_rf_acc, f1)
+  model_rf <- randomForest(phenotype ~ ., data=traintrim, ntree=10000, mtry=i, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T, sampsize=c(7,7))
+  prec <- model_rf$confusion[2,2]/sum(model_rf$confusion[,2])
+  rec <- model_rf$confusion[2,2]/sum(model_rf$confusion[2,])
+  f1 <- 2*prec*rec/(prec+rec)
+  model_rf_acc <- c(model_rf_acc, f1)
+}
+
+mtrys <- c(5, 5, 5, 10, 10, 10, 20, 20, 20, 30, 30, 30, 50, 50, 50, 100, 100, 100, 200, 200, 200)
+png("trimmodel_mtry.png", width=600, height=500)
+plot(x=mtrys, y=model_rf_acc)
+dev.off()
+
+big_rf <- randomForest(phenotype ~ ., data=traindata, ntree=10000, mtry=5, na.action=na.roughfix, importance=T, proximity=T, keep.inbag=T, sampsize=c(7,7))
+png("imp_vs_ks.png", width=500, height=500)
+plot(ksvals, big_rf$importance[,3])
+dev.off()
+
+png("all_importance.png", width=500, height=400)
+plot(y=big_rf$importance[order(big_rf$importance[,3], decreasing=T),3], x=1:1160, ylab="Importance", xlab="Gene ranking", pch=16)
+dev.off()
+
+```
+
+
+
+```{r, model built with feature selection}
+library(randomForest)
+library(dplyr)
+set.seed(1)
+
+model_rf_fs <- randomForest(phenotype ~ ., data=traintrim, ntree=10000, mtry=mtrys[which.max(model_rf_acc)], importance=T, proximity=T, sampsize=c(7,7))
+
+png("~/Documents/invasive_campylobacter/my_workflow/error_by_num_trees.png", width=700, height=500)
+plot(y=model_rf_fs$err.rate[,1], x=1:length(model_rf_fs$err.rate[,1]), pch=16)
 dev.off()
 ```
 
-Looks like a subset of the invasive strains can be separated out from the gastrointestinals. The next questions are: is this impressive, and what distinguishes these invasives from the other Campylobacter strains? Based on permutation of the classes, it looks as though it can be very hard to distinguish random classifications, with some of these models giving a median OOB error rate of 67%. The error rate of our model is 23%, while the lowest error for the permuted classes is 20%. Given that there are genetic relationships between these groups that are likely to be captured in the randomised data, this is quite impressive. This performance isn't very good for practical purposes though, with error rates for our class of interest being 60%. This could be partly because the data are so sparse. What happens if we do some feature selection first?
 
-```{r, model built with feature selection}
-set.seed(2)
-library(randomForest)
-model_rf_fs <- randomForest(class ~ ., data=traintrim, ntree=1000, mtry=30, na.action=na.roughfix, importance=T, proximity=T)
-model_rf_fs
-```
+```{r}
+# a control, where we feature select each time
 
-Performance is actually no different whether we use the full dataset or the trimmed dataset. The top genesets vary a bit, and prior filtering based on univariate tests gives us a higher likelihood of seeing parallel changes, rather than identifying lineage effects. Because of this, will report top genes from filtered set. 
-
-```{r, control for RF}
 permute <- vector()
 importance <- vector()
 
 set.seed(1)
-for (i in 1:1000) {
-	controlclass <- sample(traintrim$class)
-	model_test <- randomForest(controlclass ~ ., data=traintrim, ntree=1000, mtry=30, na.action=na.roughfix, importance=T)
-	permute <- c(permute, median(model_test$err.rate[,1]))
-	importance <- c(importance, model_test$importance[,4])
+for (i in 1:100) {
+	# permute the class labels
+  controlclass <- sample(traintrim$phenotype)
+	# don't include permutations where the labels end up matching the real ones
+	while(paste(controlclass, collapse="") == paste(traintrim$phenotype, collapse="")) {
+	  controlclass <- sample(traintrim$phenotype)
+	}
+  
+  cdbsvals <- vector()
+cksvals <- vector()
+cdata2 <- data.frame()
+
+for (i in 1:(ncol(traindata)-1)) {
+    cdata2 <- rbind(cdata2, median(traindata[,i], na.rm=T)-traindata[,i])
+        cdbsvals[i] <- median(traindata[controlclass=="Gastrointestinal",i], na.rm=T) - median(traindata[controlclass=="Invasive",i], na.rm=T)
+        cksvals[i] <- as.numeric(ks.test(traindata[controlclass=="Gastrointestinal",i],traindata[controlclass=="Invasive",i], na.rm=T)$statistic)
 }
 
-png("rferror.png", width=450, height=350)
-hist(permute, main="", xlab="Out-of-bag error rate")
-abline(v=model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1], col="red")
+ctraintrim <- traindata[,!is.na(dbsvals)&!is.na(ksvals)&ksvals>quantile(ksvals, 0.8, na.rm=T)&abs(dbsvals)>quantile(abs(dbsvals), 0.8, na.rm=T)]
+ctraintrim <- cbind.data.frame(ctraintrim, phenotype=controlclass)
+
+	model_test <- randomForest(controlclass ~ ., data=ctraintrim, ntree=10000, mtry=mtrys[which.max(model_rf_acc)], importance=T, sampsize=c(7,7))
+	permute <- c(permute, median(model_test$err.rate[,1]))
+	importance <- c(importance, model_test$importance[,3])
+}
+
+sum(permute<=(model_rf_fs$confusion[1,2]+model_rf_fs$confusion[2,1])/30)/100
+
+png("rferror_trim.png", width=450, height=350)
+hist(1-permute, main="", xlab="Out-of-bag accuracy")
+abline(v=1-(model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1]), col="red")
 dev.off()
 
-pdf("rferror.pdf", width=6, height=5)
-hist(permute, main="", xlab="Out-of-bag error rate")
-abline(v=model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1], col="red")
+pdf("rferror_trim.pdf", width=6, height=5)
+hist(1-permute, main="", xlab="Out-of-bag accuracy")
+abline(v=1-(model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1]), col="red")
 dev.off()
+
+```
+
+
+```{r}
+# looking at which variables are consistently valuable
 
 png("Featureimportance.png", width=400, height = 350)
-plot(x=1:93, y=model_rf_fs$importance[,4][order(model_rf_fs$importance[,4], decreasing=T)], xlab="Gene ranking", ylab="Gene importance (mean decrease in Gini index)", pch=16); abline(h=quantile(importance, 0.95), lty=2, lwd=2, col="grey"); abline(h=quantile(importance, 0.9), lty=3, lwd=2, col="grey")
+plot(x=1:(ncol(traintrim)-1), y=model_rf_fs$importance[,3][order(model_rf_fs$importance[,3], decreasing=T)], xlab="Gene ranking", ylab="Gene importance (mean decrease in accuracy)", pch=16); abline(h=quantile(importance, 0.95), lty=2, lwd=2, col="grey"); abline(h=quantile(importance, 0.9), lty=3, lwd=2, col="grey")
 dev.off()
 
-pdf("Featureimportance.pdf", width=6, height = 5)
-plot(x=1:93, y=model_rf_fs$importance[,4][order(model_rf_fs$importance[,4], decreasing=T)], xlab="Gene ranking", ylab="Gene importance (mean decrease in Gini index)", pch=16); abline(h=quantile(importance, 0.95), lty=2, lwd=2, col="grey"); abline(h=quantile(importance, 0.9), lty=3, lwd=2, col="grey")
+pdf("Featureimportance.pdf", width=6, height = 5, useDingbats=F)
+plot(x=1:(ncol(traintrim)-1), y=model_rf_fs$importance[,3][order(model_rf_fs$importance[,3], decreasing=T)], xlab="Gene ranking", ylab="Gene importance (mean decrease in accuracy)", pch=16); abline(h=quantile(importance, 0.95), lty=2, lwd=2, col="grey"); abline(h=quantile(importance, 0.9), lty=3, lwd=2, col="grey")
 dev.off()
 
-print(row.names(model_rf_fs$importance[model_rf_fs$importance[,4]>quantile(model_rf_fs$importance[,4], 0.9),]))
+print(row.names(model_rf_fs$importance[model_rf_fs$importance[,3]>quantile(importance, 0.90),]))
 
-```
+topvars <- vector()
+vis <- vector()
+allvars <- vector()
+allvis <- vector()
 
-```{r, assessing an informative level of feature importance}
-plot(density(importance))
-lines(density(model_rf_fs$importance[,4]), col="red")
+for(i in 1:100) {
+  model_rf_fs_perm <- randomForest(phenotype ~ ., data=traintrim, ntree=10000, mtry=mtrys[which.max(model_rf_acc)], na.action=na.roughfix, importance=T, proximity=T, sampsize=c(7,7))
+  # model_rf_fs_perm <- randomForest(phenotype ~ ., data=traintrim, ntree=10000, mtry=100, na.action=na.roughfix, importance=T, proximity=T, sampsize=c(7,7))
+  # trying the two extremes of mtry doesn't dramatically affect the results
 
-model_rf_fs$importance[model_rf_fs$importance[,4]>quantile(importance, 0.9),]
+topvars <- c(topvars, row.names(model_rf_fs_perm$importance[model_rf_fs_perm$importance[,3]>quantile(importance, 0.90),]))
+vis <- c(vis, model_rf_fs_perm$importance[model_rf_fs_perm$importance[,3]>quantile(importance, 0.90),3])
+allvars <- c(allvars, row.names(model_rf_fs_perm$importance))
+allvis <- c(allvis, model_rf_fs_perm$importance[,3])
 
-print(row.names(model_rf_fs$importance[model_rf_fs$importance[,4]>quantile(importance, 0.9),]))
-for(i in model_rf_fs$importance[model_rf_fs$importance[,4]>quantile(importance, 0.9),4]) {
-  print(sum(importance>i)/length(importance))
 }
 
-bestfeatures <- row.names(model_rf_fs$importance[model_rf_fs$importance[,4]>quantile(model_rf_fs$importance, 0.9),])
-```
+table(allvars[allvis>quantile(importance, 0.90)])
 
+topgenes <- names(table(allvars[allvis>quantile(importance, 0.90)])[table(allvars[allvis>quantile(importance, 0.90)])>75])
 
-```{r, looking at best genes}
-annotations <- read.delim("eproNOG.annotations.tsv", header=F)
-genes <- vector()
-for (i in 1:length(bestfeatures)) {
-	genes <- c(genes, row.names(data2)[grep(bestfeatures[i], row.names(data2))])
+compare_scores <- data.frame(Gene=allvars, VI=allvis, KS=ksvals[match(allvars, colnames(traindata))])
+compare_scores <- compare_scores[order(compare_scores$VI, decreasing=T),]
+compare_scores$Unique_gene <- compare_scores$Gene
+compare_scores$Unique_gene[duplicated(compare_scores$Unique_gene)] <- ""
+
+mean_vis <- vector()
+for(i in unique(allvars)) {
+  mean_vis <- c(mean_vis, mean(allvis[allvars==i]))
 }
-nogs <- sub(".*_eproNOG.", "", unique(genes))
-nogs <- sub(".meta_raw", "", nogs)
-info <- annotations[match(nogs, annotations[,2]),]
-info <- cbind(bestfeatures, info)
-
-write.table(info, file="bestfeatures.selected.tsv", quote=F, col.names=F, row.names=F, sep="\t")
-```
-
-```{r, testing top predictors}
-for(i in bestfeatures) {
-  print(i)
-  print(wilcox.test(traindata[traindata$class=="Gastrointestinal", i], traindata[traindata$class=="Invasive", i])$p.value)
+sd_vis <- vector()
+for(i in unique(allvars)) {
+  sd_vis <- c(sd_vis, sd(allvis[allvars==i]))
+}
+vi_p <- vector()
+for(i in 1:length(unique(allvars))) {
+  vi_p <- c(vi_p, sum(mean_vis[i]<importance)/length(importance))
 }
 
-data3 <- t(data2)
-data4 <- melt(data3)
-data4$Var2 <- sub("OXC6292-", "", data4$Var2)
-data4$Var2 <- sub("_eproNOG.*", "", data4$Var2)
+compare_scores2 <- data.frame(Gene=unique(allvars), Description=orthologs$Annotation[match(unique(allvars), orthologs$Gene)], Mean_VI=mean_vis, VI_P=vi_p, Prop_top=paste(table(allvars[allvis>quantile(importance, 0.90)])[unique(allvars)]), KS=ksvals[match(unique(allvars), colnames(traindata))], DBS=dbsvals[match(unique(allvars), colnames(traindata))])
+write.csv(compare_scores2[order(compare_scores2$Mean_VI, decreasing=T),], file="topgenes_rf.csv", row.names=F)
 
-ggplot(data4[data4$Var2 %in% bestfeatures,], aes(x=Var1, y=Var2, fill=value)) + geom_tile() + scale_fill_gradient2("Difference in median \nbitscore between invasive \nand gastrointestinal",high="red", mid="white", low="blue", midpoint=0) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + xlab("Strain") + ylab("Gene")
+library(ggrepel)
+ggplot(compare_scores2, aes(x=KS, y=log(Mean_VI), label=Gene, col=SD_VIs)) + geom_point() + geom_text_repel(size=3) + theme_bw() + xlim(0,0.6)
+ggsave("ks_vs_vi_labelled.pdf", width=8, height=5)
 
 ```
 
-```{r, visualising results}
-data <- data.frame(data)
-data <- cbind.data.frame(data, class=traindata$class)
-data$sample <- colnames(data2)
-data$CC <- c("ST50", "ST50", "ST50", "ST50", "ST51", "ST51", "ST51", "ST51", "ST53", "ST53", "ST61", "ST61", "CC21/48", "CC21/48", "CC677", "CC677", "CC677", "CC677", "ST1517", "ST1517", "CC21/48", "ST1517", "ST51", "ST51", "CC677", "ST50", "ST61", "CC677", "ST53", "ST50")
-data$morphology <- c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,2,3,1,2,1)
+
+```{r}
+# visualising results
+
+data <- data.frame(traindata)
+data$sample <- row.names(data)
+morphologies <- read.delim("sample_morphologies.txt", header=F)
+data$CC <- morphologies[match(data$sample, morphologies[,1]),2]
+data$morphology <- morphologies[match(data$sample, morphologies[,1]),3]
 library(plyr)
 data$morphology2 <- revalue(factor(data$morphology), c("1"="Helical", "2"="Elongated helical", "3"="Rod"))
 
-ggplot(traindata, aes(x=OXC6292_01248, y=OXC6292_01140, col=class)) + geom_point() + scale_colour_manual(values=c("skyblue", "coral3"), name="Strain")
+ggplot(data[data$group_735>590,], aes_string(x='mreB', y='group_735', col='CC', shape='phenotype', size='morphology2', label='sample')) + geom_jitter(width=0.3, height=0.3) + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15) 
+ggsave("Figure3.png", width=8, height=6)
+ggsave("Figure3.pdf", width=8, height=6, useDingbats=F)
 
-library(corrplot)
-png("feature_correlations.png", width=400, height=400)
-corrplot(cor(traindata[,bestfeatures], use="pairwise.complete.obs", method="spearman"), tl.col="black", order="hclust", mar=c(0,0,0,0))
-dev.off()
-
-png("cell_shape.png", width=350, height=350)
-ggplot(data,  aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', col='class')) + geom_jitter(width=0.2, height=0.2, size=3) + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15) + scale_colour_manual(values=c("coral3", "skyblue"), name="") + theme(legend.position = "top")
-dev.off()
-pdf("cell_shape.pdf", width=4, height=4)
-ggplot(data, aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', label='sample', col='class')) + geom_point() + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15) + theme(legend.position = "top") + geom_label(position=position_dodge(width=0.5)) + scale_colour_manual(values=c("coral3", "skyblue"), name="")
-dev.off()
-
-png("toppred.png", width=350, height=350)
-ggplot(traindata, aes(x=OXC6292_01140, y=OXC6292_01615, col=class)) + geom_jitter(width=0.2, height=0.2) + ylab("FUSC family protein") + xlab("Gne") + theme_bw(20) + scale_colour_manual(values=c("skyblue", "coral3"), name="") + theme(legend.position = "top")
-dev.off()
-
-ggplot(data, aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', col='CC', shape='class', size='morphology2', label='sample')) + geom_jitter(width=0.3, height=0.3) + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15)# + geom_text()
-ggsave("~/Documents/invasive_campylobacter/Sample_attributes_keygenes.png", width=8, height=6)
-ggsave("~/Documents/invasive_campylobacter/Sample_attributes_keygenes.pdf", width=8, height=6, useDingbats=F)
-
-# Alternative way of viewing the data
-alt <- cbind.data.frame(Morphology=data$morphology2, CC=data$CC, Sample=data$sample, MreB=data3$OXC6292.OXC6292_00702, Pgp1=data3$OXC6292.OXC6292_00266, Pgp2=data3$OXC6292.OXC6292_01417)
-alt2=melt(alt, id.vars = c("Morphology", "CC", "Sample"))
-
-ggplot(alt2, aes(x=CC, y=value, size=Morphology, col=CC)) + facet_grid(Morphology~variable) + geom_point()
 ```
 
 ```{r}
+# show score distribution of random pairs of genes - they usually cluster by ST
+
 require(gridExtra)
 
 makeplot <- function() {ggplot(traindata, aes_string(x=sample(colnames(traindata),1), y=sample(colnames(traindata),1), col="class")) + geom_jitter(width=0.2, height=0.2) + theme_bw(20) + scale_colour_manual(values=c("skyblue", "coral3"), name="") + theme(legend.position = "top") + theme(axis.text.y = element_text(angle = 90, hjust=0.5))}
@@ -306,53 +332,6 @@ dev.off()
 png("Random_genes.png", width=1000, height=1000)
 grid.arrange(plot1, plot2, plot3, plot4, plot5, plot6, plot7, plot8, plot8, ncol=3)
 dev.off()
-```
-
-
-```{r, multipanel figure}
-install.packages("gridExtra")
-library("gridExtra")
-devtools::install_github("wilkelab/cowplot")
-library("cowplot")
-
-p1 <- ggplot(data.frame(model_rf_fs$importance[order(model_rf_fs$importance[,4], decreasing=T),]), aes(x=1:nrow(model_rf_fs$importance), y=MeanDecreaseGini)) + geom_point() + theme_classic(18) + ylab("Mean decrease in Gini index") + xlab("Gene ranking")
-
-p2 <- ggplot(data.frame(cbind.data.frame(data, class=traintrim$class)), aes_string(x='OXC6292.OXC6292_00702_eproNOG.ENOG410I2XB.meta_raw', y='OXC6292.OXC6292_00266_eproNOG.ENOG410I2YA.meta_raw', col='class')) + geom_jitter(width=0.2, height=0.2, size=3) + ylab("Pgp1 bitscore") + xlab("MreB bitscore") + theme_classic(18) + scale_colour_manual(values=c("skyblue", "coral3"), name="") + theme(legend.position = "top")
-
-png("Figure2.png", width=800, height=350)
-ggdraw() + draw_plot(p1, 0, 0, 0.6, 0.88) + draw_plot(p2, 0.5, 0, 0.4, 1) + draw_plot_label(c("A", "B"), c(0, 0.5), c(1, 1), size = 15)
-dev.off()
-
-pdf("Figure2.pdf", width=9, height=4)
-ggdraw() + draw_plot(p1, 0, 0, 0.6, 0.88) + draw_plot(p2, 0.5, 0, 0.4, 1) + draw_plot_label(c("A", "B"), c(0, 0.5), c(1, 1), size = 15)
-dev.off()
-
-```
-
-```{r}
-save.image("alldata.Rdata")
-```
-
-```{r, how do our key indicator genes group our isolates?}
-pdf("proximity_top_indicators.pdf", width=6, height=6)
-corrplot(predict(model_rf_fs, na.roughfix(traintrim), proximity=T)$proximity, tl.col="black")
-dev.off()
-
-png("proximity_top_indicators.png", width=500, height=500)
-corrplot(predict(model_rf_fs, na.roughfix(traintrim), proximity=T)$proximity, tl.col="black")
-dev.off()
-
-```
-
-```{r, gene presence absence}
-orths <- read.delim("~/Documents/invasive_campylobacter/patrickclustersparsed", stringsAsFactors = F, header=F)
-presabs <- data.frame()
-for(i in 1:nrow(orths)) {
-  presabs <- rbind(presabs, cbind.data.frame(gastro=sum(is.na(orths[i,1:20])), inv=sum(is.na(orths[i,21:30]))))
-}
-
-nrow(presabs[presabs$gastro>15&presabs$inv<3,])
-nrow(presabs[presabs$gastro<5&presabs$inv>8,])
 ```
 
 
