@@ -250,6 +250,8 @@ vis <- vector()
 allvars <- vector()
 allvis <- vector()
 
+set.seed(1)
+
 for(i in 1:100) {
   model_rf_fs_perm <- randomForest(phenotype ~ ., data=traintrim, ntree=10000, mtry=mtrys[which.max(model_rf_acc)], na.action=na.roughfix, importance=T, proximity=T, sampsize=c(7,7))
   # model_rf_fs_perm <- randomForest(phenotype ~ ., data=traintrim, ntree=10000, mtry=100, na.action=na.roughfix, importance=T, proximity=T, sampsize=c(7,7))
@@ -284,7 +286,7 @@ for(i in 1:length(unique(allvars))) {
   vi_p <- c(vi_p, sum(mean_vis[i]<importance)/length(importance))
 }
 
-compare_scores2 <- data.frame(Gene=unique(allvars), Description=orthologs$Annotation[match(unique(allvars), orthologs$Gene)], Mean_VI=mean_vis, VI_P=vi_p, Prop_top=paste(table(allvars[allvis>quantile(importance, 0.90)])[unique(allvars)]), KS=ksvals[match(unique(allvars), colnames(traindata))], DBS=dbsvals[match(unique(allvars), colnames(traindata))])
+compare_scores2 <- data.frame(Gene=unique(allvars), Description=orthologs$Annotation[match(unique(allvars), orthologs$Gene)], Mean_VI=mean_vis, VI_P=vi_p, SD_VIs=sd_vis, Prop_top=paste(table(allvars[allvis>quantile(importance, 0.90)])[unique(allvars)]), KS=ksvals[match(unique(allvars), colnames(traindata))], DBS=dbsvals[match(unique(allvars), colnames(traindata))])
 write.csv(compare_scores2[order(compare_scores2$Mean_VI, decreasing=T),], file="topgenes_rf.csv", row.names=F)
 
 library(ggrepel)
@@ -306,8 +308,8 @@ library(plyr)
 data$morphology2 <- revalue(factor(data$morphology), c("1"="Helical", "2"="Elongated helical", "3"="Rod"))
 
 ggplot(data[data$group_735>590,], aes_string(x='mreB', y='group_735', col='CC', shape='phenotype', size='morphology2', label='sample')) + geom_jitter(width=0.3, height=0.3) + ylab("Bitscore - Pgp1") + xlab("Bitscore - MreB") + theme_classic(15) 
-ggsave("Figure3.png", width=8, height=6)
-ggsave("Figure3.pdf", width=8, height=6, useDingbats=F)
+ggsave("Figure4.png", width=8, height=6)
+ggsave("Figure4.pdf", width=8, height=6, useDingbats=F)
 
 ```
 
@@ -316,7 +318,7 @@ ggsave("Figure3.pdf", width=8, height=6, useDingbats=F)
 
 require(gridExtra)
 
-makeplot <- function() {ggplot(traindata, aes_string(x=sample(colnames(traindata),1), y=sample(colnames(traindata),1), col="class")) + geom_jitter(width=0.2, height=0.2) + theme_bw(20) + scale_colour_manual(values=c("skyblue", "coral3"), name="") + theme(legend.position = "top") + theme(axis.text.y = element_text(angle = 90, hjust=0.5))}
+makeplot <- function() {ggplot(traindata, aes_string(x=sample(colnames(traindata),1), y=sample(colnames(traindata),1), col="phenotype")) + geom_jitter(width=0.2, height=0.2) + theme_bw(20) + scale_colour_manual(values=c("skyblue", "coral3"), name="") + theme(legend.position = "top") + theme(axis.text.y = element_text(angle = 90, hjust=0.5))}
 plot1 <- makeplot()
 plot2 <- makeplot()
 plot3 <- makeplot()
