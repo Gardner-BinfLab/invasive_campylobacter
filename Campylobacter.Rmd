@@ -24,7 +24,7 @@ phenotype[,1] <- make.names(phenotype[,1])
 traindata <- cbind.data.frame(traindata, phenotype=phenotype[match(row.names(traindata), phenotype[,1]),2])
 
 # Roary seems to have split some paralogs in a way that doesn't make much sense - remove paralogous groups
-orthologs <- read.delim("gene_presence_absence_trim.txt", stringsAsFactors = F)
+orthologs <- read.delim("gene_presence_absence.txt", stringsAsFactors = F)
 nonunique <- orthologs$Non.unique.Gene.name[orthologs$Non.unique.Gene.name!=""]
 nonunique2 <- orthologs$Gene[orthologs$Non.unique.Gene.name!=""]
 traindata <- traindata[,is.na(match(colnames(traindata), nonunique))]
