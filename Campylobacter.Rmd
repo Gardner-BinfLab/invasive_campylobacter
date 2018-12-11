@@ -16,6 +16,7 @@ set.seed(1)
 
 traindata <- read.delim("bitscores.tsv", row.names=1)
 traindata <- t(traindata)
+traindata <- traindata[,order(colnames(traindata))]
 
 phenotype <- read.delim("phenotype.tsv", header=F)
 phenotype[,1] <- make.names(phenotype[,1])
@@ -23,7 +24,7 @@ phenotype[,1] <- make.names(phenotype[,1])
 traindata <- cbind.data.frame(traindata, phenotype=phenotype[match(row.names(traindata), phenotype[,1]),2])
 
 # Roary seems to have split some paralogs in a way that doesn't make much sense - remove paralogous groups
-orthologs <- read.csv("gene_presence_absence.csv", stringsAsFactors = F)
+orthologs <- read.delim("gene_presence_absence_trim.txt", stringsAsFactors = F)
 nonunique <- orthologs$Non.unique.Gene.name[orthologs$Non.unique.Gene.name!=""]
 nonunique2 <- orthologs$Gene[orthologs$Non.unique.Gene.name!=""]
 traindata <- traindata[,is.na(match(colnames(traindata), nonunique))]
@@ -164,7 +165,7 @@ plot(ksvals, big_rf$importance[,3])
 dev.off()
 
 png("all_importance.png", width=500, height=400)
-plot(y=big_rf$importance[order(big_rf$importance[,3], decreasing=T),3], x=1:1160, ylab="Importance", xlab="Gene ranking", pch=16)
+plot(y=big_rf$importance[order(big_rf$importance[,3], decreasing=T),3], x=1:nrow(big_rf$importance), ylab="Importance", xlab="Gene ranking", pch=16)
 dev.off()
 
 ```
@@ -220,12 +221,12 @@ ctraintrim <- cbind.data.frame(ctraintrim, phenotype=controlclass)
 sum(permute<=(model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1]))/100
 
 png("rferror_trim.png", width=450, height=350)
-hist(1-permute, main="", xlab="Out-of-bag accuracy", breaks=20)
+hist(1-permute, main="", xlab="Out-of-bag accuracy", breaks=15, xlim=c(0,1))
 abline(v=1-(model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1]), col="red")
 dev.off()
 
 pdf("rferror_trim.pdf", width=6, height=5)
-hist(1-permute, main="", xlab="Out-of-bag accuracy", breaks=20)
+hist(1-permute, main="", xlab="Out-of-bag accuracy", breaks=15, xlim=c(0,1))
 abline(v=1-(model_rf_fs$err.rate[nrow(model_rf_fs$err.rate),1]), col="red")
 dev.off()
 
